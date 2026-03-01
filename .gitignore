@@ -1,0 +1,7 @@
+.venv/
+.ruff_cache/
+tmp/
+iic/
+vibemouse.egg-info/
+__pycache__/
+*.pyc
