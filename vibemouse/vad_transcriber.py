@@ -33,9 +33,19 @@ _SENTINEL = object()
 _VAD_WINDOW_SIZE = 512
 
 # Minimum samples for the offline recognizer's encoder convolutions.
-# Segments shorter than this are skipped to avoid "Invalid input shape" errors.
+# Segments shorter than this are padded to avoid "Invalid input shape" errors.
 # 0.5 s × 16 kHz = 8000 samples.
 _MIN_SEGMENT_SAMPLES = 8000
+
+# Silence appended before VAD flush so it detects the speech→silence boundary
+# naturally instead of relying on forced emission.  10 VAD windows ≈ 0.32 s.
+_TAIL_SILENCE_WINDOWS = 10
+
+# Trailing silence appended to each segment BEFORE feeding the offline
+# recognizer.  Convolutional encoders (like FireRedASR) need right-side
+# context; without this padding the last 1–2 characters are often dropped.
+# 0.3 s × 16 kHz = 4800 samples.
+_RECOGNIZER_TAIL_PADDING = 4800
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +354,14 @@ class VadOfflineSession:
                 else:
                     # Shouldn't happen, but handle gracefully.
                     vad.accept_waveform(leftover)
+
+            # Feed trailing silence so the encoder has right-side context for
+            # the final speech frames.  This mimics the natural "speech → silence"
+            # pattern that the VAD sees during normal mid-recording emission.
+            silence_window = np.zeros(_VAD_WINDOW_SIZE, dtype=np.float32)
+            for _ in range(_TAIL_SILENCE_WINDOWS):
+                vad.accept_waveform(silence_window)
+
             vad.flush()
         except Exception:
             logger.exception("VAD flush error")
@@ -354,8 +372,23 @@ class VadOfflineSession:
         samples: NDArray[np.float32],
     ) -> str:
         """Run offline recognition on a speech segment.  Returns stripped text."""
-        if len(samples) < _MIN_SEGMENT_SAMPLES:
+        if len(samples) == 0:
             return ""
+
+        # Ensure minimum length for the encoder's input shape requirement.
+        if len(samples) < _MIN_SEGMENT_SAMPLES:
+            padded = np.zeros(_MIN_SEGMENT_SAMPLES, dtype=np.float32)
+            padded[: len(samples)] = samples
+            samples = padded
+
+        # Append trailing silence so the encoder's convolutional layers have
+        # right-side context for the final speech frames.  VAD segments end
+        # right at the speech boundary — without this the last 1–2 chars of
+        # fast speech are frequently dropped.
+        samples = np.concatenate(
+            [samples, np.zeros(_RECOGNIZER_TAIL_PADDING, dtype=np.float32)]
+        )
+
         stream = recognizer.create_stream()
         stream.accept_waveform(self._sample_rate, samples)
         recognizer.decode_stream(stream)

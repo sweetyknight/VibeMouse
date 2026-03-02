@@ -233,7 +233,7 @@ class VoiceMouseApp:
             # Keep the audio stream alive briefly so the OS audio buffer
             # drains into the session, capturing the tail of speech that
             # would otherwise be lost on a fast button release.
-            time.sleep(0.2)
+            time.sleep(self._config.finalize_grace_ms / 1000.0)
         finally:
             self._recorder.cancel()
         try:

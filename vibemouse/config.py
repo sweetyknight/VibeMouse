@@ -90,6 +90,9 @@ class AppConfig:
     # Recording mode
     recording_mode: str  # "hold" or "toggle"
 
+    # Finalization
+    finalize_grace_ms: int
+
     # Output
     enter_mode: str
     auto_paste: bool
@@ -136,7 +139,7 @@ def load_config() -> AppConfig:
         "VIBEMOUSE_ASR_BACKEND", "vad_offline", {"vad_offline"}
     )
     vad_min_silence_duration = _read_float("VIBEMOUSE_VAD_MIN_SILENCE_DURATION", 0.25)
-    vad_min_speech_duration = _read_float("VIBEMOUSE_VAD_MIN_SPEECH_DURATION", 0.25)
+    vad_min_speech_duration = _read_float("VIBEMOUSE_VAD_MIN_SPEECH_DURATION", 0.15)
     vad_threshold = _read_float("VIBEMOUSE_VAD_THRESHOLD", 0.5)
     offline_model_name = os.getenv(
         "VIBEMOUSE_OFFLINE_MODEL_NAME",
@@ -144,6 +147,10 @@ def load_config() -> AppConfig:
     )
 
     pre_buffer_seconds = _read_float("VIBEMOUSE_PRE_BUFFER_SECONDS", 0.5)
+    finalize_grace_ms = _require_non_negative(
+        "VIBEMOUSE_FINALIZE_GRACE_MS",
+        _read_int("VIBEMOUSE_FINALIZE_GRACE_MS", 350),
+    )
 
     return AppConfig(
         sample_rate=sample_rate,
@@ -157,6 +164,7 @@ def load_config() -> AppConfig:
         vad_min_speech_duration=vad_min_speech_duration,
         vad_threshold=vad_threshold,
         offline_model_name=offline_model_name,
+        finalize_grace_ms=finalize_grace_ms,
         recording_mode=recording_mode,
         button_debounce_ms=button_debounce_ms,
         enter_mode=enter_mode,
