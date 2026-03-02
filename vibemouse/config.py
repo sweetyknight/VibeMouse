@@ -87,6 +87,9 @@ class AppConfig:
     front_button: str
     rear_button: str
 
+    # Recording mode
+    recording_mode: str  # "hold" or "toggle"
+
     # Output
     enter_mode: str
     auto_paste: bool
@@ -116,6 +119,9 @@ def load_config() -> AppConfig:
     if front_button == rear_button:
         raise ValueError("VIBEMOUSE_FRONT_BUTTON and VIBEMOUSE_REAR_BUTTON must differ")
 
+    recording_mode = _read_choice(
+        "VIBEMOUSE_RECORDING_MODE", "hold", {"hold", "toggle"}
+    )
     button_debounce_ms = _require_non_negative(
         "VIBEMOUSE_BUTTON_DEBOUNCE_MS",
         _read_int("VIBEMOUSE_BUTTON_DEBOUNCE_MS", 150),
@@ -151,6 +157,7 @@ def load_config() -> AppConfig:
         vad_min_speech_duration=vad_min_speech_duration,
         vad_threshold=vad_threshold,
         offline_model_name=offline_model_name,
+        recording_mode=recording_mode,
         button_debounce_ms=button_debounce_ms,
         enter_mode=enter_mode,
         auto_paste=_read_bool("VIBEMOUSE_AUTO_PASTE", True),

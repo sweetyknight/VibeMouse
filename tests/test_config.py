@@ -170,3 +170,28 @@ class LoadConfigTests(unittest.TestCase):
             config = load_config()
 
         self.assertAlmostEqual(config.vad_threshold, 0.7)
+
+    # -- Recording mode --
+
+    def test_recording_mode_defaults_to_hold(self) -> None:
+        with patch.dict(os.environ, _env(), clear=True):
+            config = load_config()
+
+        self.assertEqual(config.recording_mode, "hold")
+
+    def test_recording_mode_toggle(self) -> None:
+        with patch.dict(
+            os.environ, _env(VIBEMOUSE_RECORDING_MODE="toggle"), clear=True
+        ):
+            config = load_config()
+
+        self.assertEqual(config.recording_mode, "toggle")
+
+    def test_invalid_recording_mode_is_rejected(self) -> None:
+        with patch.dict(
+            os.environ, _env(VIBEMOUSE_RECORDING_MODE="push"), clear=True
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "VIBEMOUSE_RECORDING_MODE must be one of"
+            ):
+                _ = load_config()

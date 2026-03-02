@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 from typing import TYPE_CHECKING
@@ -20,6 +21,8 @@ from PIL import Image, ImageDraw  # noqa: E402
 
 from vibemouse.app import VoiceMouseApp  # noqa: E402
 from vibemouse.config import load_config  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 _APP_NAME = "VibeMouse"
 _REGISTRY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -119,6 +122,14 @@ class VibeTray:
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
+                "Toggle mode (click to record)",
+                action=self._toggle_recording_mode,
+                checked=lambda _item: (
+                    self._app is not None
+                    and self._app.recording_mode == "toggle"
+                ),
+            ),
+            pystray.MenuItem(
                 "Auto-start with Windows",
                 action=self._toggle_autostart,
                 checked=lambda _item: _is_autostart_enabled(),
@@ -145,7 +156,7 @@ class VibeTray:
             self._app = VoiceMouseApp(config, on_status_change=self._on_app_status)
             self._app.run()
         except Exception as exc:
-            print(f"VoiceMouseApp crashed: {exc}")
+            logger.exception("VoiceMouseApp crashed: %s", exc)
             if self._icon is not None:
                 self._icon.stop()
 
@@ -157,19 +168,33 @@ class VibeTray:
 
         if event == "recording_start":
             self._icon.icon = _ICON_RECORDING
-            self._icon.title = f"{_APP_NAME} — Recording"
+            self._icon.title = f"{_APP_NAME} \u2014 Recording"
         elif event == "streaming":
             self._icon.icon = _ICON_STREAMING
-            self._icon.title = f"{_APP_NAME} — Streaming"
+            self._icon.title = f"{_APP_NAME} \u2014 Streaming"
         elif event in ("ready", "transcribed", "recording_stop"):
             self._icon.icon = _ICON_READY
-            self._icon.title = f"{_APP_NAME} — Ready"
+            self._icon.title = f"{_APP_NAME} \u2014 Ready ({self._get_mode_label()})"
+        elif event == "mode_change":
+            self._icon.icon = _ICON_READY
+            self._icon.title = f"{_APP_NAME} \u2014 Ready ({self._get_mode_label()})"
         elif event == "error":
             self._icon.icon = _ICON_READY
-            self._icon.title = f"{_APP_NAME} — Error"
+            self._icon.title = f"{_APP_NAME} \u2014 Error"
 
         # Force menu refresh so status label updates
         self._icon.update_menu()
+
+    def _get_mode_label(self) -> str:
+        if self._app is None:
+            return "Hold mode"
+        return "Toggle mode" if self._app.recording_mode == "toggle" else "Hold mode"
+
+    def _toggle_recording_mode(self, icon: Icon, item: MenuItem) -> None:
+        if self._app is None:
+            return
+        current = self._app.recording_mode
+        self._app.set_recording_mode("toggle" if current == "hold" else "hold")
 
     def _toggle_autostart(self, icon: Icon, item: MenuItem) -> None:
         _set_autostart(not _is_autostart_enabled())

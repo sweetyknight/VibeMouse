@@ -14,7 +14,7 @@ from vibemouse.vad_transcriber import VadOfflineTranscriber
 
 # Status callback type: (event, detail) where event is one of:
 #   "ready", "recording_start", "recording_stop",
-#   "streaming", "transcribed", "error"
+#   "streaming", "transcribed", "error", "mode_change"
 StatusCallback = Callable[[str, str], None] | None
 
 
@@ -54,9 +54,32 @@ class VoiceMouseApp:
         self._workers: set[threading.Thread] = set()
         self._session: object | None = None
 
+        # Recording mode — mutable at runtime (unlike the frozen AppConfig).
+        self._recording_mode: str = config.recording_mode
+        self._mode_lock: threading.Lock = threading.Lock()
+        self._finalizing: threading.Event = threading.Event()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @property
+    def recording_mode(self) -> str:
+        """Current recording mode ('hold' or 'toggle'). Thread-safe."""
+        with self._mode_lock:
+            return self._recording_mode
+
+    def set_recording_mode(self, mode: str) -> None:
+        """Switch recording mode at runtime. Thread-safe."""
+        if mode not in ("hold", "toggle"):
+            raise ValueError(
+                f"recording_mode must be 'hold' or 'toggle', got {mode!r}"
+            )
+        with self._mode_lock:
+            if self._recording_mode == mode:
+                return
+            self._recording_mode = mode
+        self._notify("mode_change", mode)
 
     def request_stop(self) -> None:
         """Signal the app to stop gracefully."""
@@ -75,6 +98,7 @@ class VoiceMouseApp:
         self._listener.start()
         status_msg = (
             "VibeMouse ready (VAD+offline mode). "
+            + f"recording_mode={self._recording_mode}, "
             + f"auto_paste={self._config.auto_paste}, "
             + f"enter_mode={self._config.enter_mode}, "
             + f"debounce_ms={self._config.button_debounce_ms}, "
@@ -121,10 +145,21 @@ class VoiceMouseApp:
     # ------------------------------------------------------------------
 
     def _on_front_press(self) -> None:
-        if not self._recorder.is_recording:
-            self._start_streaming()
+        mode = self.recording_mode
+        if mode == "hold":
+            if not self._recorder.is_recording:
+                self._start_streaming()
+        elif mode == "toggle":
+            if self._finalizing.is_set():
+                return
+            if self._recorder.is_recording:
+                self._stop_streaming()
+            else:
+                self._start_streaming()
 
     def _on_front_release(self) -> None:
+        if self.recording_mode == "toggle":
+            return
         if self._recorder.is_recording:
             self._stop_streaming()
 
@@ -173,12 +208,14 @@ class VoiceMouseApp:
         self._notify("recording_start")
 
     def _stop_streaming(self) -> None:
+        self._finalizing.set()
         self._notify("recording_stop")
 
         session = self._session
         self._session = None
         if session is None:
             self._recorder.cancel()
+            self._finalizing.clear()
             return
 
         worker = threading.Thread(
@@ -218,6 +255,7 @@ class VoiceMouseApp:
                 self._streaming_output.finalize()
             except Exception:
                 pass
+            self._finalizing.clear()
             with self._workers_lock:
                 self._workers.discard(current)
 

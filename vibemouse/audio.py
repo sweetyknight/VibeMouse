@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import collections
 import importlib
+import logging
 import threading
 from collections.abc import Callable
 from typing import Protocol, cast
 
 from vibemouse.transcriber import AudioFrame
+
+logger = logging.getLogger(__name__)
 
 
 class _AudioStream(Protocol):
@@ -78,6 +81,10 @@ class AudioRecorder:
                 return
             if self._sd is None:
                 raise RuntimeError("Audio input module not initialized")
+            logger.info(
+                "Opening hot mic stream (rate=%d, ch=%d, dtype=%s)",
+                self._sample_rate, self._channels, self._dtype,
+            )
             stream = self._sd.InputStream(
                 samplerate=self._sample_rate,
                 channels=self._channels,
@@ -85,6 +92,7 @@ class AudioRecorder:
                 callback=self._callback,
             )
             stream.start()
+            logger.info("Hot mic stream started")
             self._hot_stream = stream
 
     def start(
@@ -184,8 +192,13 @@ class AudioRecorder:
         try:
             sounddevice_module = importlib.import_module("sounddevice")
         except Exception as error:
+            logger.error("Failed to import sounddevice: %s", error, exc_info=True)
             raise RuntimeError(
                 "sounddevice is not installed. Install with: pip install sounddevice"
             ) from error
 
+        logger.info(
+            "sounddevice loaded (PortAudio %s)",
+            getattr(sounddevice_module, "get_portaudio_version", lambda: ("?",))(),
+        )
         self._sd = cast(_SoundDeviceModule, sounddevice_module)

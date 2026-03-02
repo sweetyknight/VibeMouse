@@ -25,6 +25,7 @@ def _default_config(**overrides: object) -> AppConfig:
         vad_min_speech_duration=0.25,
         vad_threshold=0.5,
         offline_model_name="sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16",
+        recording_mode="hold",
         button_debounce_ms=150,
         front_button="x1",
         rear_button="x2",
@@ -85,6 +86,9 @@ class StartStreamingCleanupTests(unittest.TestCase):
         app._workers_lock = threading.Lock()
         app._workers = set()
         app._session = None
+        app._recording_mode = "hold"
+        app._mode_lock = threading.Lock()
+        app._finalizing = threading.Event()
 
         kb = _FakeKeyboardController()
         app._streaming_output = StreamingTextOutput(kb, backspace_key="BS", keystroke_delay_s=0)
@@ -145,6 +149,7 @@ class FinalizeStreamingTests(unittest.TestCase):
         app._on_status_change = None
         app._workers_lock = threading.Lock()
         app._workers = set()
+        app._finalizing = threading.Event()
 
         kb = _FakeKeyboardController()
         app._streaming_output = StreamingTextOutput(kb, backspace_key="BS", keystroke_delay_s=0)
@@ -195,6 +200,9 @@ class FrontButtonPressAndHoldTests(unittest.TestCase):
         app._workers_lock = threading.Lock()
         app._workers = set()
         app._session = None
+        app._recording_mode = "hold"
+        app._mode_lock = threading.Lock()
+        app._finalizing = threading.Event()
 
         kb = _FakeKeyboardController()
         app._streaming_output = StreamingTextOutput(kb, backspace_key="BS", keystroke_delay_s=0)
@@ -247,3 +255,106 @@ class FrontButtonPressAndHoldTests(unittest.TestCase):
         app._on_front_release()
 
         app._recorder.cancel.assert_not_called()
+
+
+class ToggleModeTests(unittest.TestCase):
+    """Verify toggle recording mode behavior."""
+
+    def _make_app(self) -> object:
+        from vibemouse.app import VoiceMouseApp
+
+        app = object.__new__(VoiceMouseApp)
+        app._config = _default_config(recording_mode="toggle")
+        app._recorder = MagicMock()
+        app._recorder.is_recording = False
+        app._transcriber = MagicMock()
+        app._output = MagicMock()
+        app._on_status_change = None
+        app._stop_event = threading.Event()
+        app._workers_lock = threading.Lock()
+        app._workers = set()
+        app._session = None
+        app._recording_mode = "toggle"
+        app._mode_lock = threading.Lock()
+        app._finalizing = threading.Event()
+
+        kb = _FakeKeyboardController()
+        app._streaming_output = StreamingTextOutput(kb, backspace_key="BS", keystroke_delay_s=0)
+
+        return app
+
+    def test_first_press_starts_recording(self) -> None:
+        app = self._make_app()
+        fake_session = _FakeStreamingSession()
+        app._transcriber.start_session.return_value = fake_session
+        app._recorder.is_recording = False
+
+        app._on_front_press()
+
+        app._recorder.start.assert_called_once()
+
+    @patch("vibemouse.app.time.sleep")
+    def test_second_press_stops_recording(self, _mock_sleep: object) -> None:
+        app = self._make_app()
+        app._recorder.is_recording = True
+        fake_session = _FakeStreamingSession()
+        app._session = fake_session
+
+        app._on_front_press()
+
+        self.assertIsNone(app._session)
+
+    def test_release_is_ignored(self) -> None:
+        app = self._make_app()
+        app._recorder.is_recording = True
+
+        app._on_front_release()
+
+        app._recorder.cancel.assert_not_called()
+
+    def test_press_ignored_during_finalization(self) -> None:
+        app = self._make_app()
+        app._finalizing.set()
+        app._recorder.is_recording = False
+
+        app._on_front_press()
+
+        app._transcriber.start_session.assert_not_called()
+
+
+class RecordingModePropertyTests(unittest.TestCase):
+    """Verify recording_mode getter/setter."""
+
+    def _make_app(self) -> object:
+        from vibemouse.app import VoiceMouseApp
+
+        app = object.__new__(VoiceMouseApp)
+        app._config = _default_config()
+        app._recording_mode = "hold"
+        app._mode_lock = threading.Lock()
+        app._on_status_change = MagicMock()
+        return app
+
+    def test_getter_returns_current_mode(self) -> None:
+        app = self._make_app()
+        self.assertEqual(app.recording_mode, "hold")
+
+    def test_setter_changes_mode(self) -> None:
+        app = self._make_app()
+        app.set_recording_mode("toggle")
+        self.assertEqual(app.recording_mode, "toggle")
+
+    def test_setter_rejects_invalid_mode(self) -> None:
+        app = self._make_app()
+        with self.assertRaises(ValueError):
+            app.set_recording_mode("push")
+
+    def test_setter_fires_status_callback(self) -> None:
+        app = self._make_app()
+        app.set_recording_mode("toggle")
+        app._on_status_change.assert_called_once_with("mode_change", "toggle")
+
+    def test_setter_noop_when_same_mode(self) -> None:
+        app = self._make_app()
+        app.set_recording_mode("hold")
+        app._on_status_change.assert_not_called()

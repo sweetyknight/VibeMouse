@@ -6,6 +6,7 @@ VibeMouse 把鼠标侧键变成语音输入快捷键：
 
 - 按住侧键开始录音，VAD 智能断句 + 离线高精度识别，整句文字即时出现
 - 松开侧键结束，识别结果直接输入到当前焦点窗口
+- 支持**长按模式**和**开关模式**，可在托盘菜单实时切换
 - 另一个侧键发送 Enter 提交
 - Windows 下带系统托盘图标，状态一目了然
 
@@ -21,6 +22,7 @@ VibeMouse 把鼠标侧键变成语音输入快捷键：
 - **绕过输入法** — Windows 上通过 `SendInput` + `KEYEVENTF_UNICODE` 直接注入 Unicode，不触发 IME
 - **单实例保护** — 防止重复启动创建多个托盘图标
 - **低资源占用** — 批量音频处理、队列限容、图标缓存等优化
+- **录音模式切换** — 长按模式（按住录音）/ 开关模式（点击切换），托盘菜单实时切换
 
 ---
 
@@ -50,6 +52,8 @@ vibemouse
 首次启动会自动下载 Silero VAD 模型和 FireRedASR 离线识别模型（共约 1.5 GB），之后启动秒开。
 启动后系统托盘出现绿色圆点图标，录音时变红，识别时变橙。
 
+日志文件位于 `~/.cache/vibemouse/vibemouse.log`，EXE 模式下所有输出自动写入该文件。
+
 ### Linux (Ubuntu/Debian)
 
 ```bash
@@ -69,7 +73,7 @@ vibemouse
 
 | 侧键 | 功能 |
 | --- | --- |
-| `x1`（前侧键） | 按住录音，松开停止 |
+| `x1`（前侧键） | 长按模式：按住录音，松开停止；开关模式：点击开始/停止 |
 | `x2`（后侧键） | 发送 Enter |
 
 如果你的鼠标按键相反：
@@ -84,9 +88,19 @@ vibemouse
 
 ## 工作流程
 
+### 长按模式（默认）
+
 1. **按住** 前侧键，开始录音（VAD 实时断句，识别完成后整句出现）
 2. **松开** 前侧键，停止录音，最终文字保留在输入框中
 3. 按后侧键发送 Enter 提交
+
+### 开关模式
+
+1. **点击** 前侧键，开始录音（托盘图标变红）
+2. **再次点击** 前侧键，停止录音，文字输出到焦点窗口
+3. 按后侧键发送 Enter 提交
+
+> 在托盘菜单中勾选「Toggle mode (click to record)」即可切换到开关模式，取消勾选回到长按模式。
 
 ---
 
@@ -100,6 +114,7 @@ vibemouse
 | `VIBEMOUSE_REAR_BUTTON` | `x2` | Enter 侧键（`x1` / `x2`） |
 | `VIBEMOUSE_BUTTON_DEBOUNCE_MS` | `150` | 侧键去抖窗口（毫秒） |
 | `VIBEMOUSE_ENTER_MODE` | `enter` | 提交模式：`enter` / `ctrl_enter` / `shift_enter` / `none` |
+| `VIBEMOUSE_RECORDING_MODE` | `hold` | 录音模式：`hold`（长按）/ `toggle`（开关） |
 | `VIBEMOUSE_AUTO_PASTE` | `true` | 是否自动粘贴 |
 
 ### 模型配置
@@ -216,6 +231,7 @@ tmux new -d -s vibemouse "source .venv/bin/activate && vibemouse"
 ```
 
 Windows 下可通过托盘菜单勾选「Auto-start with Windows」实现开机自启。
+托盘菜单还可实时切换录音模式（长按 / 开关）。
 
 ---
 
