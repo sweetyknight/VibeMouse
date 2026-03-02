@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,49 +51,49 @@ def _read_choice(name: str, default: str, allowed: set[str]) -> str:
 
 @dataclass(frozen=True)
 class AppConfig:
+    # Audio recording
     sample_rate: int
     channels: int
     dtype: str
-    transcriber_backend: str
-    model_name: str
-    device: str
-    language: str
-    use_itn: bool
-    enable_vad: bool
-    vad_max_single_segment_ms: int
-    merge_vad: bool
-    merge_length_s: int
-    fallback_to_cpu: bool
+
+    # Sherpa-onnx streaming
+    sherpa_model_dir: Path
+    sherpa_num_threads: int
+
+    # Mouse buttons
     button_debounce_ms: int
-    enter_mode: str
-    auto_paste: bool
-    trust_remote_code: bool
     front_button: str
     rear_button: str
-    temp_dir: Path
+
+    # Output
+    enter_mode: str
+    auto_paste: bool
 
 
 def load_config() -> AppConfig:
-    temp_dir = Path(
-        os.getenv("VIBEMOUSE_TEMP_DIR", str(Path(tempfile.gettempdir()) / "vibemouse"))
-    )
-
     sample_rate = _require_positive(
         "VIBEMOUSE_SAMPLE_RATE", _read_int("VIBEMOUSE_SAMPLE_RATE", 16000)
     )
     channels = _require_positive(
         "VIBEMOUSE_CHANNELS", _read_int("VIBEMOUSE_CHANNELS", 1)
     )
-    vad_max_segment_ms = _require_positive(
-        "VIBEMOUSE_VAD_MAX_SEGMENT_MS", _read_int("VIBEMOUSE_VAD_MAX_SEGMENT_MS", 30000)
+
+    sherpa_model_dir = Path(
+        os.getenv(
+            "VIBEMOUSE_SHERPA_MODEL_DIR",
+            str(Path.home() / ".cache" / "vibemouse" / "models"),
+        )
     )
-    merge_length_s = _require_positive(
-        "VIBEMOUSE_MERGE_LENGTH_S", _read_int("VIBEMOUSE_MERGE_LENGTH_S", 15)
+    sherpa_num_threads = _require_positive(
+        "VIBEMOUSE_SHERPA_NUM_THREADS",
+        _read_int("VIBEMOUSE_SHERPA_NUM_THREADS", 2),
     )
+
     front_button = _read_button("VIBEMOUSE_FRONT_BUTTON", "x1")
     rear_button = _read_button("VIBEMOUSE_REAR_BUTTON", "x2")
     if front_button == rear_button:
         raise ValueError("VIBEMOUSE_FRONT_BUTTON and VIBEMOUSE_REAR_BUTTON must differ")
+
     button_debounce_ms = _require_non_negative(
         "VIBEMOUSE_BUTTON_DEBOUNCE_MS",
         _read_int("VIBEMOUSE_BUTTON_DEBOUNCE_MS", 150),
@@ -109,21 +108,11 @@ def load_config() -> AppConfig:
         sample_rate=sample_rate,
         channels=channels,
         dtype=os.getenv("VIBEMOUSE_DTYPE", "float32"),
-        transcriber_backend=os.getenv("VIBEMOUSE_BACKEND", "auto").strip().lower(),
-        model_name=os.getenv("VIBEMOUSE_MODEL", "iic/SenseVoiceSmall"),
-        device=os.getenv("VIBEMOUSE_DEVICE", "cpu"),
-        language=os.getenv("VIBEMOUSE_LANGUAGE", "auto"),
-        use_itn=_read_bool("VIBEMOUSE_USE_ITN", True),
-        enable_vad=_read_bool("VIBEMOUSE_ENABLE_VAD", True),
-        vad_max_single_segment_ms=vad_max_segment_ms,
-        merge_vad=_read_bool("VIBEMOUSE_MERGE_VAD", True),
-        merge_length_s=merge_length_s,
-        fallback_to_cpu=_read_bool("VIBEMOUSE_FALLBACK_CPU", True),
+        sherpa_model_dir=sherpa_model_dir,
+        sherpa_num_threads=sherpa_num_threads,
         button_debounce_ms=button_debounce_ms,
         enter_mode=enter_mode,
-        auto_paste=_read_bool("VIBEMOUSE_AUTO_PASTE", False),
-        trust_remote_code=_read_bool("VIBEMOUSE_TRUST_REMOTE_CODE", False),
+        auto_paste=_read_bool("VIBEMOUSE_AUTO_PASTE", True),
         front_button=front_button,
         rear_button=rear_button,
-        temp_dir=temp_dir,
     )

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import importlib
+import sys
 import threading
 import time
 from collections.abc import Callable
 from typing import Protocol, cast
+
+_IS_WINDOWS: bool = sys.platform == "win32"
 
 
 ButtonCallback = Callable[[], None]
@@ -43,25 +46,40 @@ class SideButtonListener:
             self._thread.join(timeout=2)
 
     def _run(self) -> None:
+        if _IS_WINDOWS:
+            self._run_platform_chain(
+                ("win32_hook", self._run_win32_hook),
+                ("pynput", self._run_pynput),
+            )
+        else:
+            self._run_platform_chain(
+                ("evdev", self._run_evdev),
+                ("pynput", self._run_pynput),
+            )
+
+    def _run_platform_chain(
+        self,
+        *backends: tuple[str, Callable[[], None]],
+    ) -> None:
         last_error_summary: str | None = None
         while not self._stop.is_set():
-            try:
-                self._run_evdev()
-                return
-            except Exception as evdev_error:
+            errors: list[str] = []
+            for name, runner in backends:
                 try:
-                    self._run_pynput()
+                    runner()
                     return
-                except Exception as pynput_error:
-                    summary = (
-                        "Mouse listener backends unavailable "
-                        + f"(evdev: {evdev_error}; pynput: {pynput_error}). Retrying..."
-                    )
-                    if summary != last_error_summary:
-                        print(summary)
-                        last_error_summary = summary
-                    if self._stop.wait(1.0):
-                        return
+                except Exception as error:
+                    errors.append(f"{name}: {error}")
+            summary = (
+                "Mouse listener backends unavailable ("
+                + "; ".join(errors)
+                + "). Retrying..."
+            )
+            if summary != last_error_summary:
+                print(summary)
+                last_error_summary = summary
+            if self._stop.wait(1.0):
+                return
 
     def _run_evdev(self) -> None:
         import select
@@ -126,6 +144,74 @@ class SideButtonListener:
         finally:
             for dev in devices:
                 dev.close()
+
+    def _run_win32_hook(self) -> None:
+        import ctypes
+        import ctypes.wintypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+        WH_MOUSE_LL = 14
+        WM_XBUTTONDOWN = 0x020B
+        XBUTTON1 = 0x0001
+        XBUTTON2 = 0x0002
+
+        HOOKPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_long,
+            ctypes.c_int,
+            ctypes.wintypes.WPARAM,
+            ctypes.wintypes.LPARAM,
+        )
+
+        class MSLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [
+                ("pt", ctypes.wintypes.POINT),
+                ("mouseData", ctypes.wintypes.DWORD),
+                ("flags", ctypes.wintypes.DWORD),
+                ("time", ctypes.wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+            ]
+
+        side_codes = {"x1": XBUTTON1, "x2": XBUTTON2}
+        front_code = side_codes[self._front_button]
+        rear_code = side_codes[self._rear_button]
+
+        def low_level_handler(
+            n_code: int,
+            w_param: int,
+            l_param: int,
+        ) -> int:
+            if n_code >= 0 and w_param == WM_XBUTTONDOWN:
+                data = ctypes.cast(
+                    l_param, ctypes.POINTER(MSLLHOOKSTRUCT)
+                ).contents
+                xbutton = (data.mouseData >> 16) & 0xFFFF
+                if xbutton == front_code:
+                    self._dispatch_front_press()
+                elif xbutton == rear_code:
+                    self._dispatch_rear_press()
+            return user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+        callback = HOOKPROC(low_level_handler)
+        hook = user32.SetWindowsHookExW(
+            WH_MOUSE_LL, callback, kernel32.GetModuleHandleW(None), 0
+        )
+        if not hook:
+            raise RuntimeError("Failed to install Win32 low-level mouse hook")
+
+        try:
+            msg = ctypes.wintypes.MSG()
+            while not self._stop.is_set():
+                while user32.PeekMessageW(
+                    ctypes.byref(msg), None, 0, 0, 1
+                ):
+                    user32.TranslateMessage(ctypes.byref(msg))
+                    user32.DispatchMessageW(ctypes.byref(msg))
+                if self._stop.wait(0.02):
+                    break
+        finally:
+            user32.UnhookWindowsHookEx(hook)
 
     def _run_pynput(self) -> None:
         try:

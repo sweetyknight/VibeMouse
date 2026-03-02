@@ -1,87 +1,77 @@
 # VibeMouse
 
-**Mouse-side-button voice input for VibeCoding on Linux.**
+**鼠标侧键语音输入工具 — 支持 Windows 和 Linux。**
 
-中文文档：[`README.zh-CN.md`](./README.zh-CN.md)
+VibeMouse 把鼠标侧键变成语音输入快捷键：
 
-VibeMouse turns your mouse side buttons into a fast coding workflow:
+- 按侧键开始录音，实时流式识别，文字边说边出
+- 松键结束，识别结果直接输入到当前焦点窗口
+- 另一个侧键发送 Enter 提交
+- Windows 下带系统托盘图标，状态一目了然
 
-- 🎙️ Press side button to start/stop recording
-- ✍️ Auto speech-to-text with SenseVoice
-- ⌨️ Type into focused input, or fallback to clipboard
-- ↩️ Another side button sends Enter
-
-If you spend hours in ChatGPT / Claude / IDEs and want to keep one hand on the mouse, this is for you.
+适合在 ChatGPT / Claude / IDE 里用语音写提示词或代码注释。
 
 ---
 
-## Why VibeMouse?
+## 功能
 
-When VibeCoding, your flow is usually:
-
-1. Think
-2. Speak prompt
-3. Submit
-
-VibeMouse binds that to mouse side buttons so you can do it with minimal context switching.
+- **流式语音识别** — 基于 sherpa-onnx（SenseVoice paraformer），边说边出文字
+- **跨平台** — Windows（系统托盘 + Win32 hook）/ Linux（evdev + Atspi）
+- **绕过输入法** — Windows 上通过 `SendInput` + `KEYEVENTF_UNICODE` 直接注入 Unicode，不触发 IME
+- **单实例保护** — 防止重复启动创建多个托盘图标
+- **低资源占用** — 批量音频处理、队列限容、图标缓存等优化
 
 ---
 
-## Features
+## 支持平台
 
-- Global mouse side-button listening
-- Start/stop recording with one side button
-- Speech recognition using SenseVoice
-- Smart output routing:
-  - If focused element is editable → type text directly
-  - Otherwise → copy text to clipboard (or auto paste when enabled)
-- Dedicated side button for Enter
-- CPU-first stable default (works reliably)
-- Optional backend switching (`funasr` / `funasr_onnx`)
+| 平台                | 侧键监听              | 文字输出          | 托盘图标 |
+|---------------------|-----------------------|-------------------|----------|
+| Windows 10/11       | Win32 低级鼠标 Hook   | SendInput Unicode | pystray  |
+| Linux (X11/Wayland) | evdev                 | pynput / Atspi    | —        |
+
+Python 3.10+
 
 ---
 
-## Current Platform
+## 快速开始
 
-- Linux
-- Python 3.10+
-
----
-
-## Quick Start
-
-### 1) Install system packages (Ubuntu/Debian)
+### Windows
 
 ```bash
-sudo apt update
-sudo apt install -y python3-gi gir1.2-atspi-2.0 portaudio19-dev libsndfile1
+python -m venv .venv
+.venv\Scripts\activate
+pip install -U pip
+pip install -e .
+vibemouse
 ```
 
-### 2) Install VibeMouse
+首次启动会自动下载 sherpa-onnx 模型（约 100 MB），之后启动秒开。
+启动后系统托盘出现绿色圆点图标，录音时变红。
+
+### Linux (Ubuntu/Debian)
 
 ```bash
+sudo apt install -y python3-gi gir1.2-atspi-2.0 portaudio19-dev
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e .
-```
-
-### 3) Run (recommended stable mode)
-
-```bash
-export VIBEMOUSE_BACKEND=auto
-export VIBEMOUSE_DEVICE=cpu
 vibemouse
 ```
 
+> 如果侧键监听不到，把用户加到 `input` 组：`sudo usermod -aG input $USER`，然后重新登录。
+
 ---
 
-## Default Button Mapping
+## 默认按键映射
 
-- `x1` → voice button (start/stop recording)
-- `x2` → Enter
+| 侧键 | 功能 |
+| --- | --- |
+| `x1`（前侧键） | 开始/停止录音 |
+| `x2`（后侧键） | 发送 Enter |
 
-If your mouse is reversed:
+如果你的鼠标按键相反：
 
 ```bash
 export VIBEMOUSE_FRONT_BUTTON=x2
@@ -91,141 +81,133 @@ vibemouse
 
 ---
 
-## How It Works
+## 工作流程
 
-1. Press voice side button once → recording starts
-2. Press again → recording stops, transcription runs
-3. If current focus is editable input → text is typed
-4. Otherwise text is copied to clipboard
-5. Press Enter side button to submit
+1. 按前侧键，开始录音（流式识别实时输出文字）
+2. 再按前侧键，停止录音，最终文字保留在输入框中
+3. 按后侧键发送 Enter 提交
 
 ---
 
-## Configuration
+## 配置（环境变量）
 
-Environment variables:
+### 核心配置
 
-| Variable | Default | Description |
-|---|---|---|
-| `VIBEMOUSE_BACKEND` | `auto` | `auto` / `funasr` / `funasr_onnx` |
-| `VIBEMOUSE_MODEL` | `iic/SenseVoiceSmall` | Model id/path |
-| `VIBEMOUSE_DEVICE` | `cpu` | Preferred device (`cpu`, `cuda:0`, `npu:0`) |
-| `VIBEMOUSE_FALLBACK_CPU` | `true` | Fallback to CPU if preferred device fails |
-| `VIBEMOUSE_BUTTON_DEBOUNCE_MS` | `150` | Ignore repeated side-button presses within this window |
-| `VIBEMOUSE_ENTER_MODE` | `enter` | Rear button enter mode: `enter`, `ctrl_enter`, `shift_enter`, `none` |
-| `VIBEMOUSE_AUTO_PASTE` | `false` | Auto paste with Ctrl+V after copying fallback text |
-| `VIBEMOUSE_TRUST_REMOTE_CODE` | `false` | Set `true` only for trusted models that require remote code |
-| `VIBEMOUSE_LANGUAGE` | `auto` | `auto`, `zh`, `en`, `yue`, `ja`, `ko` |
-| `VIBEMOUSE_USE_ITN` | `true` | Enable text normalization |
-| `VIBEMOUSE_ENABLE_VAD` | `true` | Enable VAD |
-| `VIBEMOUSE_VAD_MAX_SEGMENT_MS` | `30000` | Max VAD segment length |
-| `VIBEMOUSE_MERGE_VAD` | `true` | Merge VAD segments |
-| `VIBEMOUSE_MERGE_LENGTH_S` | `15` | Merge threshold in seconds |
-| `VIBEMOUSE_SAMPLE_RATE` | `16000` | Recording sample rate |
-| `VIBEMOUSE_CHANNELS` | `1` | Recording channels |
-| `VIBEMOUSE_DTYPE` | `float32` | Recording dtype |
-| `VIBEMOUSE_FRONT_BUTTON` | `x1` | Voice button (`x1` or `x2`) |
-| `VIBEMOUSE_REAR_BUTTON` | `x2` | Enter button (`x1` or `x2`) |
-| `VIBEMOUSE_TEMP_DIR` | system temp | Temp audio path |
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VIBEMOUSE_FRONT_BUTTON` | `x1` | 语音侧键（`x1` / `x2`） |
+| `VIBEMOUSE_REAR_BUTTON` | `x2` | Enter 侧键（`x1` / `x2`） |
+| `VIBEMOUSE_BUTTON_DEBOUNCE_MS` | `150` | 侧键去抖窗口（毫秒） |
+| `VIBEMOUSE_ENTER_MODE` | `enter` | 提交模式：`enter` / `ctrl_enter` / `shift_enter` / `none` |
+| `VIBEMOUSE_AUTO_PASTE` | `true` | 是否自动粘贴 |
+
+### 模型配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VIBEMOUSE_SHERPA_MODEL_DIR` | `~/.cache/vibemouse/models` | 模型存储目录 |
+| `VIBEMOUSE_SHERPA_NUM_THREADS` | `2` | 推理线程数 |
+
+### 音频配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VIBEMOUSE_SAMPLE_RATE` | `16000` | 采样率（Hz） |
+| `VIBEMOUSE_CHANNELS` | `1` | 声道数 |
+| `VIBEMOUSE_DTYPE` | `float32` | 音频数据类型 |
+
+### Windows 专属
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VIBEMOUSE_NO_TRAY` | `false` | 设为 `true` 禁用托盘模式（改为控制台模式） |
 
 ---
 
-## Troubleshooting
+## 常见问题
 
-### Side button not detected
+### Linux: 侧键监听不到
 
-Likely Linux input permission issue. Add your user to `input` group and relogin:
+通常是输入设备权限问题：
 
 ```bash
 sudo usermod -aG input $USER
+# 重新登录生效
 ```
 
-### Text is not typed into app
+### 后侧键 Enter 不稳定
 
-Some apps do not expose editable accessibility metadata. In that case VibeMouse falls back to clipboard by design.
-
-On Hyprland, terminal windows (foot/kitty/alacritty/wezterm, etc.) use terminal-friendly paste shortcuts automatically (`Ctrl+Shift+V`, then `Shift+Insert` fallback).
-
-### Rear button Enter feels unreliable
-
-Try a different submit combo and reduce accidental repeated clicks:
+加大去抖或切换提交组合键：
 
 ```bash
 export VIBEMOUSE_ENTER_MODE=ctrl_enter
 export VIBEMOUSE_BUTTON_DEBOUNCE_MS=220
-systemctl --user restart vibemouse.service
 ```
 
-For Hyprland, you can move Enter to a compositor-level bind and disable VibeMouse rear-button Enter:
+Hyprland 用户可以用合成器级绑定替代：
 
 ```ini
 # ~/.config/hypr/UserConfigs/UserKeybinds.conf
 bind = , mouse:276, sendshortcut, , Return, activewindow
-# If your physical rear button is X1, use mouse:275 instead
 ```
 
 ```bash
 export VIBEMOUSE_ENTER_MODE=none
-systemctl --user restart vibemouse.service
-hyprctl reload config-only
 ```
 
-### Recording works but recognition empty
+### 能录音但识别为空
 
-Check microphone gain/input source first. Also verify your sample is not silent.
-
----
-
-## About NPU/OpenVINO
-
-NPU support depends on model graph compatibility with the NPU compiler.
-
-In this project, **CPU default is intentional** for stability. If NPU compile fails, app behavior remains usable via CPU fallback.
+检查麦克风增益/输入源，确认录到的不是静音。
 
 ---
 
-## Run as background process (optional)
-
-You can run with tmux/screen/systemd for always-on workflow.
-
-Example (tmux):
+## 构建 Windows EXE（可选）
 
 ```bash
-tmux new -d -s vibemouse "source .venv/bin/activate && vibemouse"
-tmux attach -t vibemouse
+pip install "pyinstaller>=6.0"
+python scripts/build_exe.py
+# 输出: dist/VibeMouse.exe
 ```
 
 ---
 
-## Project Layout
+## 项目结构
 
 ```text
 vibemouse/
-  app.py           # app orchestration
-  audio.py         # recording
-  mouse_listener.py# side-button listener
-  transcriber.py   # ASR backends
-  output.py        # type/clipboard/enter output
-  config.py        # env config
-  main.py          # CLI entry
+  main.py              # 入口（托盘/控制台模式选择、单实例锁）
+  app.py               # 主流程编排（录音↔识别↔输出）
+  audio.py             # 音频录制（sounddevice）
+  transcriber.py       # 流式识别（sherpa-onnx OnlineRecognizer）
+  model_manager.py     # 模型下载与路径管理
+  streaming_output.py  # 流式文字输出（Win32 Unicode / pynput）
+  output.py            # Enter 键发送（Atspi / Hyprland / pynput）
+  mouse_listener.py    # 侧键监听（Win32 Hook / evdev / pynput）
+  config.py            # 环境变量配置
+  tray.py              # Windows 系统托盘图标
+  __main__.py          # python -m vibemouse 支持
 ```
 
 ---
 
-## Development
+## 后台常驻运行（Linux）
 
 ```bash
-python -m compileall vibemouse
-python -m pip check
+# tmux
+tmux new -d -s vibemouse "source .venv/bin/activate && vibemouse"
+
+# 或 systemd user service
 ```
+
+Windows 下可通过托盘菜单勾选「Auto-start with Windows」实现开机自启。
 
 ---
 
 ## License
 
-VibeMouse source code is licensed under Apache-2.0. See `LICENSE`.
+VibeMouse 项目源码采用 Apache-2.0 许可证，详见 `LICENSE`。
 
-Third-party and model-asset notices are documented in `THIRD_PARTY_NOTICES.md`.
+第三方依赖与模型资产声明见 `THIRD_PARTY_NOTICES.md`。
 
-Before redistributing binaries or bundled models, review LGPL obligations
-(`pynput`, `PyGObject`) and verify the exact license of the model IDs you ship.
+在分发二进制或打包模型前，请复核 LGPL 依赖（`pynput`、`PyGObject`）
+的合规要求，并确认你实际使用的模型许可证。

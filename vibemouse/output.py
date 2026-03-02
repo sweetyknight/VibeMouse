@@ -4,10 +4,11 @@ import importlib
 import json
 import os
 import subprocess
+import sys
 import time
 from typing import Protocol, cast
 
-import pyperclip
+_IS_WINDOWS: bool = sys.platform == "win32"
 
 
 class TextOutput:
@@ -31,8 +32,12 @@ class TextOutput:
         self._enter_key: object = key_holder.enter
         self._ctrl_key: object = key_holder.ctrl
         self._shift_key: object = key_holder.shift
-        self._atspi: object | None = self._load_atspi_module()
-        self._hyprland_session: bool = self._detect_hyprland_session()
+        self._atspi: object | None = None if _IS_WINDOWS else self._load_atspi_module()
+        self._hyprland_session: bool = False if _IS_WINDOWS else self._detect_hyprland_session()
+
+    @property
+    def keyboard(self) -> _KeyboardController:
+        return self._kb
 
     def send_enter(self, *, mode: str = "enter") -> None:
         normalized = mode.strip().lower()
@@ -52,38 +57,6 @@ class TextOutput:
             self._tap_modified_key(self._shift_key, self._enter_key)
             return
         raise ValueError(f"Unsupported enter mode: {mode!r}")
-
-    def inject_or_clipboard(self, text: str, *, auto_paste: bool = False) -> str:
-        normalized = text.strip()
-        if not normalized:
-            return "empty"
-
-        if self._is_text_input_focused():
-            self._kb.type(normalized)
-            return "typed"
-
-        pyperclip.copy(normalized)
-        if auto_paste:
-            try:
-                self._paste_clipboard()
-                return "pasted"
-            except Exception:
-                return "clipboard"
-        return "clipboard"
-
-    def _paste_clipboard(self) -> None:
-        if self._is_hyprland_terminal_active():
-            if self._send_hyprland_shortcut(mod="CTRL SHIFT", key="V"):
-                return
-            if self._send_hyprland_shortcut(mod="SHIFT", key="Insert"):
-                return
-
-        if self._send_hyprland_shortcut(mod="CTRL", key="V"):
-            return
-        self._kb.press(self._ctrl_key)
-        self._kb.press("v")
-        self._kb.release("v")
-        self._kb.release(self._ctrl_key)
 
     def _tap_key(self, key: object) -> None:
         self._kb.press(key)
@@ -136,72 +109,6 @@ class TextOutput:
 
         return proc.returncode == 0 and proc.stdout.strip() == "ok"
 
-    def _is_hyprland_terminal_active(self) -> bool:
-        if not self._hyprland_session:
-            return False
-
-        try:
-            proc = subprocess.run(
-                ["hyprctl", "-j", "activewindow"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=1.0,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-
-        if proc.returncode != 0:
-            return False
-
-        try:
-            payload_obj = cast(object, json.loads(proc.stdout))
-        except json.JSONDecodeError:
-            return False
-
-        if not isinstance(payload_obj, dict):
-            return False
-
-        payload_map = cast(dict[str, object], payload_obj)
-
-        window_class = str(payload_map.get("class", "")).lower()
-        initial_class = str(payload_map.get("initialClass", "")).lower()
-        title = str(payload_map.get("title", "")).lower()
-
-        terminal_hints = {
-            "foot",
-            "kitty",
-            "alacritty",
-            "wezterm",
-            "ghostty",
-            "gnome-terminal",
-            "gnome-terminal-server",
-            "konsole",
-            "tilix",
-            "xterm",
-            "terminator",
-            "xfce4-terminal",
-            "urxvt",
-            "st",
-            "tabby",
-            "hyper",
-            "warp",
-        }
-        if any(
-            hint in window_class or hint in initial_class for hint in terminal_hints
-        ):
-            return True
-
-        title_hints = {
-            "terminal",
-            "tmux",
-            "bash",
-            "zsh",
-            "fish",
-            "powershell",
-        }
-        return any(hint in title for hint in title_hints)
-
     @staticmethod
     def _load_atspi_module() -> object | None:
         try:
@@ -219,39 +126,6 @@ class TextOutput:
         if "hyprland" in desktop.lower():
             return True
         return bool(os.getenv("HYPRLAND_INSTANCE_SIGNATURE"))
-
-    def _is_text_input_focused(self) -> bool:
-        script = (
-            "import gi\n"
-            "gi.require_version('Atspi', '2.0')\n"
-            "from gi.repository import Atspi\n"
-            "obj = Atspi.get_desktop(0).get_focus()\n"
-            "editable = False\n"
-            "role = ''\n"
-            "if obj is not None:\n"
-            "    role = obj.get_role_name().lower()\n"
-            "    attrs = obj.get_attributes() or []\n"
-            "    for it in attrs:\n"
-            "        s = str(it).lower()\n"
-            "        if s == 'editable:true' or s.endswith(':editable:true'):\n"
-            "            editable = True\n"
-            "            break\n"
-            "roles = {'text', 'entry', 'password text', 'terminal', 'paragraph', 'document text', 'document web'}\n"
-            "print('1' if editable or role in roles else '0')\n"
-        )
-
-        try:
-            proc = subprocess.run(
-                ["python3", "-c", script],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=1.5,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-
-        return proc.returncode == 0 and proc.stdout.strip() == "1"
 
 
 class _KeyboardController(Protocol):
