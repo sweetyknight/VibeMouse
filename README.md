@@ -4,8 +4,8 @@
 
 VibeMouse 把鼠标侧键变成语音输入快捷键：
 
-- 按侧键开始录音，实时流式识别，文字边说边出
-- 松键结束，识别结果直接输入到当前焦点窗口
+- 按住侧键开始录音，VAD 智能断句 + 离线高精度识别，整句文字即时出现
+- 松开侧键结束，识别结果直接输入到当前焦点窗口
 - 另一个侧键发送 Enter 提交
 - Windows 下带系统托盘图标，状态一目了然
 
@@ -15,7 +15,8 @@ VibeMouse 把鼠标侧键变成语音输入快捷键：
 
 ## 功能
 
-- **流式语音识别** — 基于 sherpa-onnx（SenseVoice paraformer），边说边出文字
+- **VAD + 离线高精度识别** — Silero VAD 智能断句 + FireRedASR 离线识别，整句文字一次出现，准确率高
+- **音频预缓冲** — 录音前 0.5 秒预缓冲，不丢第一个音节
 - **跨平台** — Windows（系统托盘 + Win32 hook）/ Linux（evdev + Atspi）
 - **绕过输入法** — Windows 上通过 `SendInput` + `KEYEVENTF_UNICODE` 直接注入 Unicode，不触发 IME
 - **单实例保护** — 防止重复启动创建多个托盘图标
@@ -46,8 +47,8 @@ pip install -e .
 vibemouse
 ```
 
-首次启动会自动下载 sherpa-onnx 模型（约 100 MB），之后启动秒开。
-启动后系统托盘出现绿色圆点图标，录音时变红。
+首次启动会自动下载 Silero VAD 模型和 FireRedASR 离线识别模型（共约 1.5 GB），之后启动秒开。
+启动后系统托盘出现绿色圆点图标，录音时变红，识别时变橙。
 
 ### Linux (Ubuntu/Debian)
 
@@ -68,7 +69,7 @@ vibemouse
 
 | 侧键 | 功能 |
 | --- | --- |
-| `x1`（前侧键） | 开始/停止录音 |
+| `x1`（前侧键） | 按住录音，松开停止 |
 | `x2`（后侧键） | 发送 Enter |
 
 如果你的鼠标按键相反：
@@ -83,8 +84,8 @@ vibemouse
 
 ## 工作流程
 
-1. 按前侧键，开始录音（流式识别实时输出文字）
-2. 再按前侧键，停止录音，最终文字保留在输入框中
+1. **按住** 前侧键，开始录音（VAD 实时断句，识别完成后整句出现）
+2. **松开** 前侧键，停止录音，最终文字保留在输入框中
 3. 按后侧键发送 Enter 提交
 
 ---
@@ -107,6 +108,15 @@ vibemouse
 |------|--------|------|
 | `VIBEMOUSE_SHERPA_MODEL_DIR` | `~/.cache/vibemouse/models` | 模型存储目录 |
 | `VIBEMOUSE_SHERPA_NUM_THREADS` | `2` | 推理线程数 |
+| `VIBEMOUSE_OFFLINE_MODEL_NAME` | `sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16` | 离线识别模型名称（中英双语） |
+
+### VAD 配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VIBEMOUSE_VAD_MIN_SILENCE_DURATION` | `0.25` | 最小静音时长（秒），用于断句 |
+| `VIBEMOUSE_VAD_MIN_SPEECH_DURATION` | `0.25` | 最小语音时长（秒），过短片段被忽略 |
+| `VIBEMOUSE_VAD_THRESHOLD` | `0.5` | VAD 置信度阈值（0–1） |
 
 ### 音频配置
 
@@ -115,6 +125,7 @@ vibemouse
 | `VIBEMOUSE_SAMPLE_RATE` | `16000` | 采样率（Hz） |
 | `VIBEMOUSE_CHANNELS` | `1` | 声道数 |
 | `VIBEMOUSE_DTYPE` | `float32` | 音频数据类型 |
+| `VIBEMOUSE_PRE_BUFFER_SECONDS` | `0.5` | 录音前预缓冲时长（秒），防止首音节丢失 |
 
 ### Windows 专属
 
@@ -164,6 +175,10 @@ export VIBEMOUSE_ENTER_MODE=none
 ## 构建 Windows EXE（可选）
 
 ```bash
+# 方式一：使用 build.bat 一键构建
+build.bat
+
+# 方式二：手动构建
 pip install "pyinstaller>=6.0"
 python scripts/build_exe.py
 # 输出: dist/VibeMouse.exe
@@ -177,8 +192,9 @@ python scripts/build_exe.py
 vibemouse/
   main.py              # 入口（托盘/控制台模式选择、单实例锁）
   app.py               # 主流程编排（录音↔识别↔输出）
-  audio.py             # 音频录制（sounddevice）
-  transcriber.py       # 流式识别（sherpa-onnx OnlineRecognizer）
+  audio.py             # 音频录制（sounddevice）+ 预缓冲
+  transcriber.py       # 类型定义（StreamingResult / AudioFrame）
+  vad_transcriber.py   # VAD + 离线识别（Silero VAD + FireRedASR）
   model_manager.py     # 模型下载与路径管理
   streaming_output.py  # 流式文字输出（Win32 Unicode / pynput）
   output.py            # Enter 键发送（Atspi / Hyprland / pynput）

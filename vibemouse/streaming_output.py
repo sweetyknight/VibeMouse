@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from collections.abc import Callable
 from typing import Protocol
 
 _IS_WINDOWS: bool = sys.platform == "win32"
@@ -53,6 +54,9 @@ if _IS_WINDOWS:
     _SIZEOF_INPUT: int = ctypes.sizeof(_INPUT)
     _SendInput = ctypes.windll.user32.SendInput  # type: ignore[attr-defined]
 
+    # Virtual-key code for the Backspace key.
+    _VK_BACK: int = 0x08
+
     def _send_unicode_string(text: str) -> None:
         """Type *text* via Win32 SendInput with KEYEVENTF_UNICODE.
 
@@ -92,6 +96,32 @@ if _IS_WINDOWS:
 
         _SendInput(n, arr, _SIZEOF_INPUT)
 
+    def _send_backspaces(count: int) -> None:
+        """Send *count* Backspace key events in a single SendInput call.
+
+        Much faster than pressing/releasing one key at a time through pynput
+        because all events are injected in one kernel transition.
+        """
+        if count <= 0:
+            return
+
+        _KBD: int = 1       # INPUT_KEYBOARD
+        _UP: int = 0x0002   # KEYEVENTF_KEYUP
+
+        n = count * 2  # key-down + key-up per backspace
+        arr = (_INPUT * n)()
+        idx = 0
+        for _ in range(count):
+            arr[idx].type = _KBD
+            arr[idx].u.ki.wVk = _VK_BACK
+            idx += 1
+            arr[idx].type = _KBD
+            arr[idx].u.ki.wVk = _VK_BACK
+            arr[idx].u.ki.dwFlags = _UP
+            idx += 1
+
+        _SendInput(n, arr, _SIZEOF_INPUT)
+
 
 class StreamingTextOutput:
     """Incrementally types streaming recognition results with correction support.
@@ -107,10 +137,14 @@ class StreamingTextOutput:
         backspace_key: object,
         *,
         keystroke_delay_s: float = 0.01,
+        type_fn: Callable[[str], None] | None = None,
+        backspace_fn: Callable[[int], None] | None = None,
     ) -> None:
         self._kb = keyboard
         self._backspace_key = backspace_key
         self._delay_s = keystroke_delay_s
+        self._type_fn: Callable[[str], None] = type_fn if type_fn is not None else keyboard.type
+        self._backspace_fn: Callable[[int], None] | None = backspace_fn
         self._lock = threading.Lock()
         self._current_text: str = ""
 
@@ -158,6 +192,11 @@ class StreamingTextOutput:
     # ------------------------------------------------------------------
 
     def _backspace_n(self, count: int) -> None:
+        if count <= 0:
+            return
+        if self._backspace_fn is not None:
+            self._backspace_fn(count)
+            return
         for _ in range(count):
             self._kb.press(self._backspace_key)
             self._kb.release(self._backspace_key)
@@ -165,12 +204,7 @@ class StreamingTextOutput:
                 time.sleep(self._delay_s)
 
     def _type_text(self, text: str) -> None:
-        # On Windows, inject Unicode directly via SendInput to bypass the IME.
-        # On other platforms, fall back to pynput which works correctly.
-        if _IS_WINDOWS:
-            _send_unicode_string(text)
-        else:
-            self._kb.type(text)
+        self._type_fn(text)
         if self._delay_s > 0:
             time.sleep(self._delay_s)
 

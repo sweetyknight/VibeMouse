@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import threading
 import unittest
-from unittest.mock import patch
 
 from vibemouse.streaming_output import StreamingTextOutput, _common_prefix_length
 
@@ -44,7 +43,6 @@ class CommonPrefixLengthTests(unittest.TestCase):
         self.assertEqual(_common_prefix_length("abcd", "ab"), 2)
 
 
-@patch("vibemouse.streaming_output._IS_WINDOWS", False)
 class StreamingTextOutputTests(unittest.TestCase):
     def _make(self) -> tuple[StreamingTextOutput, _FakeKeyboardController]:
         kb = _FakeKeyboardController()

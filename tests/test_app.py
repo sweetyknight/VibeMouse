@@ -9,7 +9,7 @@ import numpy as np
 
 from vibemouse.config import AppConfig
 from vibemouse.streaming_output import StreamingTextOutput
-from vibemouse.transcriber import StreamingResult, StreamingSession
+from vibemouse.transcriber import StreamingResult
 
 
 def _default_config(**overrides: object) -> AppConfig:
@@ -17,8 +17,14 @@ def _default_config(**overrides: object) -> AppConfig:
         sample_rate=16000,
         channels=1,
         dtype="float32",
+        pre_buffer_seconds=0.0,
         sherpa_model_dir=Path("/tmp/models"),
         sherpa_num_threads=2,
+        asr_backend="vad_offline",
+        vad_min_silence_duration=0.25,
+        vad_min_speech_duration=0.25,
+        vad_threshold=0.5,
+        offline_model_name="sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16",
         button_debounce_ms=150,
         front_button="x1",
         rear_button="x2",
@@ -135,6 +141,7 @@ class FinalizeStreamingTests(unittest.TestCase):
 
         app = object.__new__(VoiceMouseApp)
         app._config = _default_config()
+        app._recorder = MagicMock()
         app._on_status_change = None
         app._workers_lock = threading.Lock()
         app._workers = set()
@@ -144,7 +151,8 @@ class FinalizeStreamingTests(unittest.TestCase):
 
         return app
 
-    def test_streaming_output_finalized_on_success(self) -> None:
+    @patch("vibemouse.app.time.sleep")
+    def test_streaming_output_finalized_on_success(self, _mock_sleep: object) -> None:
         from vibemouse.app import VoiceMouseApp
 
         app = self._make_app()
@@ -154,8 +162,10 @@ class FinalizeStreamingTests(unittest.TestCase):
         app._finalize_streaming(session)
 
         self.assertEqual(app._streaming_output.current_text, "")
+        app._recorder.cancel.assert_called_once()
 
-    def test_streaming_output_finalized_on_error(self) -> None:
+    @patch("vibemouse.app.time.sleep")
+    def test_streaming_output_finalized_on_error(self, _mock_sleep: object) -> None:
         from vibemouse.app import VoiceMouseApp
 
         app = self._make_app()
@@ -165,3 +175,75 @@ class FinalizeStreamingTests(unittest.TestCase):
         app._finalize_streaming(session)
 
         self.assertEqual(app._streaming_output.current_text, "")
+        app._recorder.cancel.assert_called_once()
+
+
+class FrontButtonPressAndHoldTests(unittest.TestCase):
+    """Verify press-and-hold behavior for the front button."""
+
+    def _make_app(self) -> object:
+        from vibemouse.app import VoiceMouseApp
+
+        app = object.__new__(VoiceMouseApp)
+        app._config = _default_config()
+        app._recorder = MagicMock()
+        app._recorder.is_recording = False
+        app._transcriber = MagicMock()
+        app._output = MagicMock()
+        app._on_status_change = None
+        app._stop_event = threading.Event()
+        app._workers_lock = threading.Lock()
+        app._workers = set()
+        app._session = None
+
+        kb = _FakeKeyboardController()
+        app._streaming_output = StreamingTextOutput(kb, backspace_key="BS", keystroke_delay_s=0)
+
+        return app
+
+    def test_press_starts_recording_when_not_recording(self) -> None:
+        app = self._make_app()
+        fake_session = _FakeStreamingSession()
+        app._transcriber.start_session.return_value = fake_session
+        app._recorder.is_recording = False
+
+        app._on_front_press()
+
+        app._recorder.start.assert_called_once()
+        self.assertIs(app._session, fake_session)
+
+    def test_press_is_noop_when_already_recording(self) -> None:
+        app = self._make_app()
+        app._recorder.is_recording = True
+
+        app._on_front_press()
+
+        app._transcriber.start_session.assert_not_called()
+
+    @patch("vibemouse.app.time.sleep")
+    def test_release_stops_recording_when_recording(self, _mock_sleep: object) -> None:
+        app = self._make_app()
+        app._recorder.is_recording = True
+        fake_session = _FakeStreamingSession()
+        app._session = fake_session
+
+        app._on_front_release()
+
+        # Session is cleared immediately on release.
+        self.assertIsNone(app._session)
+
+        # cancel() is called in the worker thread — wait for it.
+        with app._workers_lock:
+            workers = list(app._workers)
+        for worker in workers:
+            worker.join(timeout=5)
+
+        app._recorder.cancel.assert_called_once()
+
+    def test_release_is_noop_when_not_recording(self) -> None:
+        app = self._make_app()
+        app._recorder.is_recording = False
+
+        app._on_front_release()
+
+        app._recorder.cancel.assert_not_called()

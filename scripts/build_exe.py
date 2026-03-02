@@ -13,13 +13,53 @@ _ICO_PATH = _BUILD_DIR / "vibemouse.ico"
 _SPEC_PATH = _ROOT / "vibemouse.spec"
 
 
-def _check_pyinstaller() -> None:
+# ---------------------------------------------------------------------------
+# Dependency checks
+# ---------------------------------------------------------------------------
+
+
+def _check_dependencies() -> None:
+    missing: list[str] = []
     try:
         import PyInstaller  # noqa: F401
     except ImportError:
-        print("PyInstaller is not installed. Install it with:")
-        print('  pip install "pyinstaller>=6.0"')
+        missing.append('pyinstaller>=6.0')
+    try:
+        import sherpa_onnx  # noqa: F401
+    except ImportError:
+        missing.append('sherpa-onnx')
+    if missing:
+        print("Missing build dependencies:")
+        for dep in missing:
+            print(f'  pip install "{dep}"')
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Model check
+# ---------------------------------------------------------------------------
+
+
+def _check_model() -> None:
+    """Check whether the ASR model is already downloaded."""
+    model_dir = Path.home() / ".cache" / "vibemouse" / "models"
+    model_name = "sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16"
+    model_path = model_dir / model_name
+
+    print("=== Model status ===")
+    if (model_path / "tokens.txt").exists() and list(model_path.glob("encoder*.onnx")):
+        size_mb = sum(f.stat().st_size for f in model_path.rglob("*") if f.is_file())
+        print(f"  Model found: {model_path}")
+        print(f"  Size: {size_mb / (1024 * 1024):.0f} MB")
+    else:
+        print(f"  Model not found at: {model_path}")
+        print("  Model will be downloaded automatically on first launch (~1.3 GB)")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# ICO generation
+# ---------------------------------------------------------------------------
 
 
 def _generate_ico() -> None:
@@ -42,7 +82,6 @@ def _generate_ico() -> None:
         )
         images.append(img)
 
-    # Save as multi-size ICO
     images[0].save(
         str(_ICO_PATH),
         format="ICO",
@@ -50,6 +89,11 @@ def _generate_ico() -> None:
         append_images=images[1:],
     )
     print(f"Icon generated: {_ICO_PATH}")
+
+
+# ---------------------------------------------------------------------------
+# PyInstaller
+# ---------------------------------------------------------------------------
 
 
 def _run_pyinstaller() -> None:
@@ -73,16 +117,34 @@ def _run_pyinstaller() -> None:
     exe_path = _ROOT / "dist" / "VibeMouse.exe"
     if exe_path.exists():
         size_mb = exe_path.stat().st_size / (1024 * 1024)
-        print(f"Build succeeded: {exe_path} ({size_mb:.1f} MB)")
+        print(f"\nBuild succeeded: {exe_path} ({size_mb:.1f} MB)")
     else:
         print("Build completed but EXE not found at expected path.")
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
 def main() -> None:
-    _check_pyinstaller()
+    print("=" * 50)
+    print("  VibeMouse Build")
+    print("=" * 50)
+    print()
+
+    _check_dependencies()
+    _check_model()
     _generate_ico()
+
+    print("=== Building EXE ===")
     _run_pyinstaller()
+
+    print()
+    print("=" * 50)
+    print("  Done!  dist/VibeMouse.exe")
+    print("=" * 50)
 
 
 if __name__ == "__main__":

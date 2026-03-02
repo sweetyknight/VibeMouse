@@ -42,8 +42,7 @@ def _make_icon(color: str) -> Image.Image:
 
 _COLOR_READY = "#22c55e"  # green
 _COLOR_RECORDING = "#ef4444"  # red
-_COLOR_STREAMING = "#3b82f6"  # blue (streaming recognition)
-_COLOR_BUSY = "#f59e0b"  # amber (processing)
+_COLOR_STREAMING = "#f59e0b"  # amber (streaming recognition)
 
 # Pre-generate icons once at import time to avoid repeated PIL allocations
 # on every status change callback.
@@ -52,10 +51,13 @@ _ICON_RECORDING = _make_icon(_COLOR_RECORDING)
 _ICON_STREAMING = _make_icon(_COLOR_STREAMING)
 
 
+_REGISTRY_HIVE = winreg.HKEY_CURRENT_USER
+
+
 def _is_autostart_enabled() -> bool:
     """Check whether the autostart registry entry exists."""
     try:
-        with winreg.OpenKey(_REGISTRY_KEY_HANDLE(), _REGISTRY_KEY, 0, winreg.KEY_READ) as key:
+        with winreg.OpenKey(_REGISTRY_HIVE, _REGISTRY_KEY, 0, winreg.KEY_READ) as key:
             winreg.QueryValueEx(key, _APP_NAME)
             return True
     except FileNotFoundError:
@@ -64,19 +66,13 @@ def _is_autostart_enabled() -> bool:
         return False
 
 
-def _REGISTRY_KEY_HANDLE() -> int:
-    return winreg.HKEY_CURRENT_USER
-
-
 def _set_autostart(enabled: bool) -> None:
     """Write or remove the autostart registry entry."""
     try:
         with winreg.OpenKey(
-            _REGISTRY_KEY_HANDLE(), _REGISTRY_KEY, 0, winreg.KEY_SET_VALUE
+            _REGISTRY_HIVE, _REGISTRY_KEY, 0, winreg.KEY_SET_VALUE
         ) as key:
             if enabled:
-                exe_path = sys.executable
-                # If running as a frozen exe, use that path directly
                 if getattr(sys, "frozen", False):
                     exe_path = sys.executable
                 else:

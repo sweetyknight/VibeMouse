@@ -9,6 +9,10 @@ from typing import Protocol, cast
 
 _IS_WINDOWS: bool = sys.platform == "win32"
 
+# Minimum hold duration before a release event fires.  Suppresses hardware
+# bounce where the switch generates a spurious release-press-release within
+# a few milliseconds of the real press.
+_MIN_HOLD_S: float = 0.05
 
 ButtonCallback = Callable[[], None]
 
@@ -17,12 +21,14 @@ class SideButtonListener:
     def __init__(
         self,
         on_front_press: ButtonCallback,
+        on_front_release: ButtonCallback,
         on_rear_press: ButtonCallback,
         front_button: str,
         rear_button: str,
         debounce_s: float = 0.15,
     ) -> None:
         self._on_front_press: ButtonCallback = on_front_press
+        self._on_front_release: ButtonCallback = on_front_release
         self._on_rear_press: ButtonCallback = on_rear_press
         self._front_button: str = front_button
         self._rear_button: str = rear_button
@@ -135,12 +141,16 @@ class SideButtonListener:
                 for fd in ready:
                     dev = fd_map[fd]
                     for event in dev.read():
-                        if event.type != ecodes.EV_KEY or event.value != 1:
+                        if event.type != ecodes.EV_KEY:
                             continue
-                        if event.code == front_code:
-                            self._dispatch_front_press()
-                        elif event.code == rear_code:
-                            self._dispatch_rear_press()
+                        if event.value == 1:  # press
+                            if event.code == front_code:
+                                self._dispatch_front_press()
+                            elif event.code == rear_code:
+                                self._dispatch_rear_press()
+                        elif event.value == 0:  # release
+                            if event.code == front_code:
+                                self._dispatch_front_release()
         finally:
             for dev in devices:
                 dev.close()
@@ -154,6 +164,7 @@ class SideButtonListener:
 
         WH_MOUSE_LL = 14
         WM_XBUTTONDOWN = 0x020B
+        WM_XBUTTONUP = 0x020C
         XBUTTON1 = 0x0001
         XBUTTON2 = 0x0002
 
@@ -182,15 +193,19 @@ class SideButtonListener:
             w_param: int,
             l_param: int,
         ) -> int:
-            if n_code >= 0 and w_param == WM_XBUTTONDOWN:
+            if n_code >= 0 and w_param in (WM_XBUTTONDOWN, WM_XBUTTONUP):
                 data = ctypes.cast(
                     l_param, ctypes.POINTER(MSLLHOOKSTRUCT)
                 ).contents
                 xbutton = (data.mouseData >> 16) & 0xFFFF
-                if xbutton == front_code:
-                    self._dispatch_front_press()
-                elif xbutton == rear_code:
-                    self._dispatch_rear_press()
+                if w_param == WM_XBUTTONDOWN:
+                    if xbutton == front_code:
+                        self._dispatch_front_press()
+                    elif xbutton == rear_code:
+                        self._dispatch_rear_press()
+                elif w_param == WM_XBUTTONUP:
+                    if xbutton == front_code:
+                        self._dispatch_front_release()
             return user32.CallNextHookEx(None, n_code, w_param, l_param)
 
         callback = HOOKPROC(low_level_handler)
@@ -200,18 +215,46 @@ class SideButtonListener:
         if not hook:
             raise RuntimeError("Failed to install Win32 low-level mouse hook")
 
+        # Create a Win32 Event so MsgWaitForMultipleObjects can wake on
+        # either a new window message OR a stop signal — zero CPU when idle.
+        stop_event_handle = kernel32.CreateEventW(None, True, False, None)
+        if not stop_event_handle:
+            user32.UnhookWindowsHookEx(hook)
+            raise RuntimeError("Failed to create Win32 stop event")
+
+        # Monitor self._stop in a tiny helper thread that signals the
+        # Win32 Event, waking the message loop from its blocking wait.
+        def _signal_on_stop() -> None:
+            self._stop.wait()
+            kernel32.SetEvent(stop_event_handle)
+
+        stop_thread = threading.Thread(target=_signal_on_stop, daemon=True)
+        stop_thread.start()
+
+        WAIT_OBJECT_0 = 0x00000000
+        QS_ALLINPUT = 0x04FF
+        INFINITE = 0xFFFFFFFF
+
         try:
             msg = ctypes.wintypes.MSG()
+            handles = (ctypes.c_void_p * 1)(stop_event_handle)
             while not self._stop.is_set():
+                # Block until a message arrives OR the stop event is signalled.
+                result = user32.MsgWaitForMultipleObjects(
+                    1, handles, False, INFINITE, QS_ALLINPUT,
+                )
+                if result == WAIT_OBJECT_0:
+                    # Stop event signalled.
+                    break
+                # result == WAIT_OBJECT_0 + 1 means message(s) available.
                 while user32.PeekMessageW(
                     ctypes.byref(msg), None, 0, 0, 1
                 ):
                     user32.TranslateMessage(ctypes.byref(msg))
                     user32.DispatchMessageW(ctypes.byref(msg))
-                if self._stop.wait(0.02):
-                    break
         finally:
             user32.UnhookWindowsHookEx(hook)
+            kernel32.CloseHandle(stop_event_handle)
 
     def _run_pynput(self) -> None:
         try:
@@ -230,13 +273,15 @@ class SideButtonListener:
         rear_candidates = button_map[self._rear_button]
 
         def on_click(_x: int, _y: int, button: object, pressed: bool) -> None:
-            if not pressed:
-                return
             btn_name = str(button).lower().split(".")[-1]
-            if btn_name in front_candidates:
-                self._dispatch_front_press()
-            elif btn_name in rear_candidates:
-                self._dispatch_rear_press()
+            if pressed:
+                if btn_name in front_candidates:
+                    self._dispatch_front_press()
+                elif btn_name in rear_candidates:
+                    self._dispatch_rear_press()
+            else:
+                if btn_name in front_candidates:
+                    self._dispatch_front_release()
 
         listener = listener_ctor(on_click=on_click)
         listener.start()
@@ -249,6 +294,14 @@ class SideButtonListener:
     def _dispatch_front_press(self) -> None:
         if self._should_fire_front():
             self._on_front_press()
+
+    def _dispatch_front_release(self) -> None:
+        now = time.monotonic()
+        with self._debounce_lock:
+            elapsed = now - self._last_front_press_monotonic
+        if elapsed < _MIN_HOLD_S:
+            return
+        self._on_front_release()
 
     def _dispatch_rear_press(self) -> None:
         if self._should_fire_rear():

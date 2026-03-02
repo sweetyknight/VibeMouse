@@ -35,6 +35,7 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.sample_rate, 16000)
         self.assertEqual(config.channels, 1)
         self.assertEqual(config.dtype, "float32")
+        self.assertAlmostEqual(config.pre_buffer_seconds, 0.5)
         self.assertEqual(config.sherpa_num_threads, 2)
         self.assertEqual(
             config.sherpa_model_dir,
@@ -132,3 +133,40 @@ class LoadConfigTests(unittest.TestCase):
                 "VIBEMOUSE_SHERPA_NUM_THREADS must be a positive integer",
             ):
                 _ = load_config()
+
+    # -- ASR backend --
+
+    def test_asr_backend_defaults_to_vad_offline(self) -> None:
+        with patch.dict(os.environ, _env(), clear=True):
+            config = load_config()
+
+        self.assertEqual(config.asr_backend, "vad_offline")
+
+    def test_invalid_asr_backend_is_rejected(self) -> None:
+        with patch.dict(
+            os.environ, _env(VIBEMOUSE_ASR_BACKEND="streaming"), clear=True
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "VIBEMOUSE_ASR_BACKEND must be one of"
+            ):
+                _ = load_config()
+
+    def test_vad_defaults(self) -> None:
+        with patch.dict(os.environ, _env(), clear=True):
+            config = load_config()
+
+        self.assertAlmostEqual(config.vad_min_silence_duration, 0.25)
+        self.assertAlmostEqual(config.vad_min_speech_duration, 0.25)
+        self.assertAlmostEqual(config.vad_threshold, 0.5)
+        self.assertEqual(
+            config.offline_model_name,
+            "sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16",
+        )
+
+    def test_vad_threshold_can_be_configured(self) -> None:
+        with patch.dict(
+            os.environ, _env(VIBEMOUSE_VAD_THRESHOLD="0.7"), clear=True
+        ):
+            config = load_config()
+
+        self.assertAlmostEqual(config.vad_threshold, 0.7)

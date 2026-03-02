@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 
 from vibemouse.audio import AudioRecorder
@@ -8,7 +9,8 @@ from vibemouse.config import AppConfig
 from vibemouse.mouse_listener import SideButtonListener
 from vibemouse.output import TextOutput
 from vibemouse.streaming_output import StreamingTextOutput
-from vibemouse.transcriber import StreamingResult, StreamingSession, StreamingTranscriber
+from vibemouse.transcriber import StreamingResult
+from vibemouse.vad_transcriber import VadOfflineTranscriber
 
 # Status callback type: (event, detail) where event is one of:
 #   "ready", "recording_start", "recording_stop",
@@ -32,13 +34,15 @@ class VoiceMouseApp:
             sample_rate=config.sample_rate,
             channels=config.channels,
             dtype=config.dtype,
+            pre_buffer_seconds=config.pre_buffer_seconds,
         )
-        self._transcriber: StreamingTranscriber = StreamingTranscriber(config)
+        self._transcriber = VadOfflineTranscriber(config)
         self._output: TextOutput = TextOutput()
         self._streaming_output: StreamingTextOutput = self._build_streaming_output()
 
         self._listener: SideButtonListener = SideButtonListener(
             on_front_press=self._on_front_press,
+            on_front_release=self._on_front_release,
             on_rear_press=self._on_rear_press,
             front_button=config.front_button,
             rear_button=config.rear_button,
@@ -48,7 +52,7 @@ class VoiceMouseApp:
         self._stop_event: threading.Event = threading.Event()
         self._workers_lock: threading.Lock = threading.Lock()
         self._workers: set[threading.Thread] = set()
-        self._session: StreamingSession | None = None
+        self._session: object | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -61,18 +65,22 @@ class VoiceMouseApp:
     def run(self) -> None:
         # Pre-load the model BEFORE starting the listener so that button
         # callbacks never block the Win32 hook thread with a long download.
-        print("Loading sherpa-onnx model (first run may download ~100 MB) ...")
+        print("Loading ASR model (first run may download models) ...")
         self._transcriber.ensure_loaded()
+
+        # Start the microphone in hot-standby so the pre-buffer fills
+        # before the first button press.
+        self._recorder.ensure_hot()
 
         self._listener.start()
         status_msg = (
-            "VibeMouse ready (streaming mode). "
+            "VibeMouse ready (VAD+offline mode). "
             + f"auto_paste={self._config.auto_paste}, "
             + f"enter_mode={self._config.enter_mode}, "
             + f"debounce_ms={self._config.button_debounce_ms}, "
             + f"front_button={self._config.front_button}, "
             + f"rear_button={self._config.rear_button}. "
-            + "Press side-front to start/stop recording, side-rear to send Enter."
+            + "Hold side-front to record, release to stop. Side-rear sends Enter."
         )
         print(status_msg)
         self._notify("ready", status_msg)
@@ -85,18 +93,28 @@ class VoiceMouseApp:
 
     def shutdown(self) -> None:
         self._listener.stop()
-        self._recorder.cancel()
+        self._recorder.shutdown()
+
+        # Stop any active session so its decode thread stops emitting results
+        # that would otherwise be typed into the focused window during exit.
+        session = self._session
+        self._session = None
+        if session is not None:
+            try:
+                session.stop()
+            except Exception:
+                pass
+
+        # Erase any partially typed text left on screen.
+        try:
+            self._streaming_output.cancel()
+        except Exception:
+            pass
+
         with self._workers_lock:
             workers = list(self._workers)
-        still_running: list[threading.Thread] = []
         for worker in workers:
             worker.join(timeout=5)
-            if worker.is_alive():
-                still_running.append(worker)
-        if still_running:
-            print(
-                f"Shutdown warning: {len(still_running)} worker(s) still running"
-            )
 
     # ------------------------------------------------------------------
     # Button callbacks
@@ -105,7 +123,9 @@ class VoiceMouseApp:
     def _on_front_press(self) -> None:
         if not self._recorder.is_recording:
             self._start_streaming()
-        else:
+
+    def _on_front_release(self) -> None:
+        if self._recorder.is_recording:
             self._stop_streaming()
 
     def _on_rear_press(self) -> None:
@@ -153,13 +173,12 @@ class VoiceMouseApp:
         self._notify("recording_start")
 
     def _stop_streaming(self) -> None:
-        self._recorder.cancel()
         self._notify("recording_stop")
 
         session = self._session
         self._session = None
         if session is None:
-            print("No active streaming session")
+            self._recorder.cancel()
             return
 
         worker = threading.Thread(
@@ -171,8 +190,15 @@ class VoiceMouseApp:
             self._workers.add(worker)
         worker.start()
 
-    def _finalize_streaming(self, session: StreamingSession) -> None:
+    def _finalize_streaming(self, session: object) -> None:
         current = threading.current_thread()
+        try:
+            # Keep the audio stream alive briefly so the OS audio buffer
+            # drains into the session, capturing the tail of speech that
+            # would otherwise be lost on a fast button release.
+            time.sleep(0.2)
+        finally:
+            self._recorder.cancel()
         try:
             final_text = session.stop()
 
@@ -219,7 +245,22 @@ class VoiceMouseApp:
         # instead of a redundant importlib call.
         import pynput.keyboard
 
+        from vibemouse.streaming_output import _IS_WINDOWS
+
+        type_fn = None
+        backspace_fn = None
+        if _IS_WINDOWS:
+            from vibemouse.streaming_output import (
+                _send_backspaces,
+                _send_unicode_string,
+            )
+
+            type_fn = _send_unicode_string
+            backspace_fn = _send_backspaces
+
         return StreamingTextOutput(
             keyboard=self._output.keyboard,
             backspace_key=pynput.keyboard.Key.backspace,
+            type_fn=type_fn,
+            backspace_fn=backspace_fn,
         )
