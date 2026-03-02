@@ -23,6 +23,11 @@ _VAD_MODEL_URL = (
     "silero_vad.onnx"
 )
 
+_PUNCTUATION_MODEL_URL_TEMPLATE = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/"
+    "{model_name}.tar.bz2"
+)
+
 
 @dataclass(frozen=True)
 class SherpaModelPaths:
@@ -51,6 +56,66 @@ def resolve_offline_model(
     if not _model_files_present(model_path):
         _download_and_extract(model_dir, model_name)
     return _build_paths(model_path)
+
+
+def resolve_punctuation_model(
+    model_dir: Path,
+    model_name: str,
+) -> Path:
+    """Ensure the punctuation model is downloaded and return the .onnx path."""
+    model_path = model_dir / model_name
+    if not model_path.exists():
+        _download_and_extract_punctuation(model_dir, model_name)
+    return _find_punct_onnx(model_path)
+
+
+def _download_and_extract_punctuation(model_dir: Path, model_name: str) -> None:
+    model_dir.mkdir(parents=True, exist_ok=True)
+    url = _PUNCTUATION_MODEL_URL_TEMPLATE.format(model_name=model_name)
+    archive_path = model_dir / f"{model_name}.tar.bz2"
+    part_path = archive_path.with_suffix(archive_path.suffix + ".part")
+
+    logger.info("Downloading punctuation model from %s", url)
+    print(f"Downloading punctuation model: {model_name} ...")
+    try:
+        _resumable_download(url, part_path)
+    except Exception as error:
+        _safe_unlink(part_path)
+        raise RuntimeError(
+            f"Failed to download punctuation model from {url}: {error}"
+        ) from error
+
+    part_path.rename(archive_path)
+
+    logger.info("Extracting punctuation model to %s", model_dir)
+    print(f"Extracting punctuation model to {model_dir} ...")
+    extract_target = model_dir / model_name
+    try:
+        with tarfile.open(str(archive_path), "r:bz2") as tar:
+            tar.extractall(path=str(model_dir), filter="data")
+    except Exception as error:
+        _safe_rmtree(extract_target)
+        raise RuntimeError(
+            f"Failed to extract punctuation model archive: {error}"
+        ) from error
+    finally:
+        _safe_unlink(archive_path)
+
+    print(f"Punctuation model ready: {extract_target}")
+
+
+def _find_punct_onnx(model_path: Path) -> Path:
+    """Find the punctuation .onnx file, preferring int8 quantised."""
+    for pattern in ["model.int8.onnx", "model.onnx"]:
+        candidate = model_path / pattern
+        if candidate.exists():
+            return candidate
+    # Fallback: search recursively.
+    for pattern in ["**/model.int8.onnx", "**/model.onnx"]:
+        candidates = sorted(model_path.glob(pattern))
+        if candidates:
+            return candidates[0]
+    raise RuntimeError(f"No punctuation model.onnx found in {model_path}")
 
 
 def _download_single_file(model_dir: Path, url: str, filename: str) -> None:

@@ -96,9 +96,11 @@ class VoiceMouseApp:
         self._recorder.ensure_hot()
 
         self._listener.start()
+        punct_status = "enabled" if self._config.enable_punctuation else "disabled"
         status_msg = (
             "VibeMouse ready (VAD+offline mode). "
             + f"recording_mode={self._recording_mode}, "
+            + f"punctuation={punct_status}, "
             + f"auto_paste={self._config.auto_paste}, "
             + f"enter_mode={self._config.enter_mode}, "
             + f"debounce_ms={self._config.button_debounce_ms}, "

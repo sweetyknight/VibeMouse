@@ -93,6 +93,10 @@ class AppConfig:
     # Finalization
     finalize_grace_ms: int
 
+    # Punctuation restoration
+    enable_punctuation: bool
+    punctuation_model_name: str
+
     # Output
     enter_mode: str
     auto_paste: bool
@@ -146,6 +150,12 @@ def load_config() -> AppConfig:
         "sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16",
     )
 
+    enable_punctuation = _read_bool("VIBEMOUSE_ENABLE_PUNCTUATION", True)
+    punctuation_model_name = os.getenv(
+        "VIBEMOUSE_PUNCTUATION_MODEL_NAME",
+        "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12",
+    )
+
     pre_buffer_seconds = _read_float("VIBEMOUSE_PRE_BUFFER_SECONDS", 0.5)
     finalize_grace_ms = _require_non_negative(
         "VIBEMOUSE_FINALIZE_GRACE_MS",
@@ -167,6 +177,8 @@ def load_config() -> AppConfig:
         finalize_grace_ms=finalize_grace_ms,
         recording_mode=recording_mode,
         button_debounce_ms=button_debounce_ms,
+        enable_punctuation=enable_punctuation,
+        punctuation_model_name=punctuation_model_name,
         enter_mode=enter_mode,
         auto_paste=_read_bool("VIBEMOUSE_AUTO_PASTE", True),
         front_button=front_button,

@@ -21,6 +21,7 @@ from vibemouse.config import AppConfig
 from vibemouse.model_manager import (
     SherpaModelPaths,
     resolve_offline_model,
+    resolve_punctuation_model,
     resolve_vad_model,
 )
 from vibemouse.transcriber import AudioFrame, StreamingCallback, StreamingResult
@@ -89,6 +90,10 @@ class _OfflineRecognizer(Protocol):
     def decode_stream(self, stream: _OfflineStream) -> None: ...
 
 
+class _OfflinePunctuation(Protocol):
+    def add_punctuation(self, text: str) -> str: ...
+
+
 # ---------------------------------------------------------------------------
 # VadOfflineTranscriber — manages VAD + OfflineRecognizer lifecycle
 # ---------------------------------------------------------------------------
@@ -100,6 +105,7 @@ class VadOfflineTranscriber:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
         self._recognizer: _OfflineRecognizer | None = None
+        self._punctuation: _OfflinePunctuation | None = None
         self._vad_model_path: str | None = None
         self._sherpa: object | None = None
         self._load_lock = threading.Lock()
@@ -128,6 +134,9 @@ class VadOfflineTranscriber:
             )
             self._recognizer = self._create_recognizer(asr_paths)
 
+            if self._config.enable_punctuation:
+                self._punctuation = self._create_punctuation()
+
     def start_session(self, on_result: StreamingCallback) -> VadOfflineSession:
         """Create a new session backed by its own decode thread."""
         self.ensure_loaded()
@@ -138,6 +147,7 @@ class VadOfflineTranscriber:
         return VadOfflineSession(
             vad=vad,
             recognizer=self._recognizer,
+            punctuation=self._punctuation,
             sample_rate=self._config.sample_rate,
             on_result=on_result,
         )
@@ -183,6 +193,22 @@ class VadOfflineTranscriber:
             sherpa.VoiceActivityDetector(vad_config, buffer_size_in_seconds=100),
         )
 
+    def _create_punctuation(self) -> _OfflinePunctuation:
+        """Load the CT-Transformer punctuation restoration model."""
+        sherpa = self._sherpa
+        punct_onnx = resolve_punctuation_model(
+            self._config.sherpa_model_dir,
+            self._config.punctuation_model_name,
+        )
+        logger.info("Loading punctuation model: %s", punct_onnx)
+        model_config = sherpa.OfflinePunctuationModelConfig(
+            ct_transformer=str(punct_onnx),
+            num_threads=1,
+            provider="cpu",
+        )
+        config = sherpa.OfflinePunctuationConfig(model=model_config)
+        return cast(_OfflinePunctuation, sherpa.OfflinePunctuation(config))
+
 
 # ---------------------------------------------------------------------------
 # VadOfflineSession — one recording → text lifecycle
@@ -196,11 +222,13 @@ class VadOfflineSession:
         self,
         vad: _VoiceActivityDetector,
         recognizer: _OfflineRecognizer,
+        punctuation: _OfflinePunctuation | None,
         sample_rate: int,
         on_result: StreamingCallback,
     ) -> None:
         self._vad = vad
         self._recognizer = recognizer
+        self._punctuation = punctuation
         self._sample_rate = sample_rate
         self._on_result = on_result
 
@@ -305,6 +333,15 @@ class VadOfflineSession:
         self._drain_vad(vad, recognizer, confirmed_parts)
 
         self._final_text = "".join(confirmed_parts)
+
+        if self._final_text and self._punctuation is not None:
+            try:
+                self._final_text = self._punctuation.add_punctuation(
+                    self._final_text
+                )
+            except Exception:
+                logger.exception("Punctuation restoration failed")
+
         if self._final_text != self._last_text:
             try:
                 self._on_result(
